@@ -1,0 +1,6 @@
+tsviewer
+*.o
+*~
+*.swp
+core
+core.*
