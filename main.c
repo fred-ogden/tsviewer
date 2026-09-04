@@ -25,7 +25,7 @@
 #define MAX_LINE 8192
 #define MAX_INPUT_FILES 4
 #define BAD_VALUE -9999.0
-#define TSVIEWER_VERSION "1.03"
+#define TSVIEWER_VERSION "1.04"
 
 /* ---------------------------------------------------------------------
  * tsviewer -- Interactive Scientific Time-Series Viewer
@@ -116,6 +116,8 @@
  *         August 2026
  *  v1.03: Constrained series-panel width and automatic paired statistical
  *         role selection, August 2026
+ *  v1.04: Pair-set role feedback, log-transformed NSE/KGE, and F1 help,
+ *         September 2026
  *
  * --------------------------------------------------------------------- */
 
@@ -160,35 +162,6 @@ typedef enum {
     Y_RANGE_POSITIVE_ONLY,
     Y_RANGE_NEGATIVE_ONLY
 } YRangeMode;
-
-static const char *file_format_name(FileFormat f)
-{
-    switch (f) {
-        case FILE_FORMAT_TOA5: return "TOA5";
-        case FILE_FORMAT_DELIMITED_HEADER: return "Delimited text with header";
-        case FILE_FORMAT_DELIMITED_NO_HEADER: return "Delimited text without header";
-        default: return "Unknown";
-    }
-}
-
-static const char *timestamp_format_name(TimestampFormat f)
-{
-    switch (f) {
-        case TIMESTAMP_FORMAT_TEXT: return "text date/time";
-        case TIMESTAMP_FORMAT_DATE_ONLY: return "date-only daily data";
-        case TIMESTAMP_FORMAT_COMPACT_YMDHM: return "compact YYYYMMDDHHMM";
-        case TIMESTAMP_FORMAT_COMPACT_YMDHMS: return "compact YYYYMMDDHHMMSS";
-        case TIMESTAMP_FORMAT_INTERVAL_END_COMPACT: return "interval end compact timestamp";
-        case TIMESTAMP_FORMAT_YEAR_ONLY: return "year-only annual data";
-        case TIMESTAMP_FORMAT_YEAR_MONTH: return "year-month monthly data";
-        case TIMESTAMP_FORMAT_JULIAN_DATE: return "astronomical Julian Date";
-        case TIMESTAMP_FORMAT_MODIFIED_JULIAN_DATE: return "Modified Julian Date";
-        case TIMESTAMP_FORMAT_UNIX_SECONDS: return "Unix seconds";
-        case TIMESTAMP_FORMAT_UNIX_MILLISECONDS: return "Unix milliseconds";
-        case TIMESTAMP_FORMAT_NUMERIC_ABSCISSA: return "numeric abscissa";
-        default: return "unknown";
-    }
-}
 
 typedef struct {
     char *name;
@@ -240,6 +213,8 @@ typedef struct {
     GtkWidget *integrate_check;
     GtkWidget *pair_sets_check;
     GtkWidget *match_variable_colors_check;
+    GtkWidget *help_window;
+    int updating_controls;
 
     YRangeMode y_range_mode;
     int log_y_axis;
@@ -277,9 +252,7 @@ static void reference_button_toggled(GtkToggleButton *button, gpointer user_data
 static void model_button_toggled(GtkToggleButton *button, gpointer user_data);
 static void set_view_window(AppData *app, double t_start, double t_end);
 static void reset_view_to_full_record(AppData *app);
-static double estimate_gap_threshold_s(AppData *app);
 static void update_summary_label(AppData *app);
-static int series_contains_negative_values(const TimeSeries *series, int n_records);
 static int value_is_visible_for_y_mode(const AppData *app, double value);
 static int append_loaded_file(AppData *app, const char *filename, int file_index);
 static void apply_file_line_style(cairo_t *cr, int file_index);
@@ -289,6 +262,7 @@ static int build_integrated_values(AppData *app);
 static void free_integrated_values(AppData *app);
 static int integrated_values_are_cached(const AppData *app);
 static double series_display_value(const AppData *app, const TimeSeries *series, int index);
+static void show_help_window(AppData *app);
 
 
 static void normalize_series_name(const char *src, char *dst, size_t dst_size)
@@ -1849,24 +1823,6 @@ static int decimals_for_spacing(double spacing)
     return decimals;
 }
 
-static int nearest_record_index(AppData *app, double target_time)
-{
-    if (!app || app->n_records <= 0) return -1;
-    int lo = 0;
-    int hi = app->n_records - 1;
-    while (lo < hi) {
-        int mid = lo + (hi - lo) / 2;
-        if (app->time_values[mid] < target_time) lo = mid + 1;
-        else hi = mid;
-    }
-    if (lo > 0) {
-        double da = fabs((app->time_values[lo] - target_time));
-        double db = fabs((app->time_values[lo - 1] - target_time));
-        if (db < da) lo--;
-    }
-    return lo;
-}
-
 static void append_nse_kge_statistics(GString *text,
                                       const AppData *app,
                                       const TimeSeries *reference,
@@ -1878,6 +1834,7 @@ static void append_nse_kge_statistics(GString *text,
     int rn;
     int mn;
     int valid;
+    int log_values_valid = TRUE_INT;
     double sr = 0.0;
     double sm = 0.0;
 
@@ -1897,20 +1854,39 @@ static void append_nse_kge_statistics(GString *text,
 
     if (valid) {
         for (int k = 0; k < rn; k++) {
+            double rvalue = reference->values[ri0 + k];
+            double mvalue = model->values[mi0 + k];
+
             if (reference->time_values[ri0 + k] != model->time_values[mi0 + k] ||
-                !isfinite(reference->values[ri0 + k]) ||
-                !isfinite(model->values[mi0 + k])) {
+                !isfinite(rvalue) || !isfinite(mvalue)) {
                 valid = FALSE_INT;
                 break;
             }
-            sr += reference->values[ri0 + k];
-            sm += model->values[mi0 + k];
+
+            if (app->log_y_axis && (rvalue <= 0.0 || mvalue <= 0.0)) {
+                log_values_valid = FALSE_INT;
+                break;
+            }
+
+            if (app->log_y_axis) {
+                rvalue = log10(rvalue);
+                mvalue = log10(mvalue);
+            }
+            sr += rvalue;
+            sm += mvalue;
         }
     }
 
     if (!valid) {
         g_string_append(text,
             "  NSE/KGE unavailable: missing values or timestamps do not align\n");
+        return;
+    }
+
+    if (app->log_y_axis && !log_values_valid) {
+        g_string_append(text,
+            "  Calculation of NSE and KGE of log-transformed values not possible\n"
+            "  because both series are not everywhere >0.\n");
         return;
     }
 
@@ -1925,6 +1901,12 @@ static void append_nse_kge_statistics(GString *text,
         for (int k = 0; k < rn; k++) {
             double rvalue = reference->values[ri0 + k];
             double mvalue = model->values[mi0 + k];
+
+            if (app->log_y_axis) {
+                rvalue = log10(rvalue);
+                mvalue = log10(mvalue);
+            }
+
             double dref = rvalue - mr;
             double dmod = mvalue - mm;
             sse += (mvalue - rvalue) * (mvalue - rvalue);
@@ -1935,7 +1917,9 @@ static void append_nse_kge_statistics(GString *text,
 
         if (ssr <= 0.0 || ssm <= 0.0 || fabs(mr) <= 1.0e-15) {
             g_string_append(text,
-                "  NSE/KGE undefined for constant or zero-mean reference data\n");
+                app->log_y_axis
+                ? "  NSE_log(x)/KGE_log(x) undefined for constant or zero-mean log-transformed reference data\n"
+                : "  NSE/KGE undefined for constant or zero-mean reference data\n");
         }
         else {
             double nse = 1.0 - sse / ssr;
@@ -1946,8 +1930,14 @@ static void append_nse_kge_statistics(GString *text,
             double kge = 1.0 - sqrt((r - 1.0) * (r - 1.0) +
                                     (alpha - 1.0) * (alpha - 1.0) +
                                     (beta - 1.0) * (beta - 1.0));
-            g_string_append_printf(text,
-                "  NSE = %.6f\n  KGE = %.6f\n", nse, kge);
+            if (app->log_y_axis) {
+                g_string_append_printf(text,
+                    "  NSE_log(x) = %.6f\n  KGE_log(x) = %.6f\n", nse, kge);
+            }
+            else {
+                g_string_append_printf(text,
+                    "  NSE = %.6f\n  KGE = %.6f\n", nse, kge);
+            }
         }
     }
 }
@@ -2141,16 +2131,6 @@ static void update_status(AppData *app)
     update_stats_panel(app);
 }
 
-static int series_contains_negative_values(const TimeSeries *series, int n_records)
-{
-    if (!series || !series->values) return FALSE_INT;
-    for (int i = 0; i < n_records; i++) {
-        double value = series->values[i];
-        if (isfinite(value) && value < 0.0) return TRUE_INT;
-    }
-    return FALSE_INT;
-}
-
 static int value_is_visible_for_y_mode(const AppData *app, double value)
 {
     if (!isfinite(value)) return FALSE_INT;
@@ -2205,23 +2185,17 @@ static int set_series_enabled(AppData *app, TimeSeries *series, int requested_en
 {
     int enabled = requested_enabled;
 
-    if (app->log_y_axis && requested_enabled &&
-        series_contains_negative_values(series, series->n_records)) {
-        enabled = FALSE_INT;
-        series->auto_disabled_for_log = TRUE_INT;
-    }
-    else {
-        series->auto_disabled_for_log = FALSE_INT;
+    if (!app || !series) return FALSE_INT;
+
+    series->auto_disabled_for_log = FALSE_INT;
+    series->enabled = enabled;
+
+    if (series->check_button) {
+        app->updating_controls = TRUE_INT;
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(series->check_button), enabled);
+        app->updating_controls = FALSE_INT;
     }
 
-    series->enabled = enabled;
-    if (series->check_button) {
-        g_signal_handlers_block_by_func(series->check_button,
-                                        G_CALLBACK(checkbox_toggled), series);
-        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(series->check_button), enabled);
-        g_signal_handlers_unblock_by_func(series->check_button,
-                                          G_CALLBACK(checkbox_toggled), series);
-    }
     return enabled;
 }
 
@@ -2231,12 +2205,9 @@ static void checkbox_toggled(GtkToggleButton *button, gpointer user_data)
     AppData *app = g_object_get_data(G_OBJECT(button), "app");
     GtkWidget *drawing_area = g_object_get_data(G_OBJECT(button), "drawing_area");
     int requested_enabled = gtk_toggle_button_get_active(button) ? TRUE_INT : FALSE_INT;
-    int rejected_count = 0;
+    if (!app || app->updating_controls) return;
 
-    if (!app) return;
-
-    if (!set_series_enabled(app, series, requested_enabled) && requested_enabled)
-        rejected_count++;
+    set_series_enabled(app, series, requested_enabled);
 
     if (app->pair_sets_check &&
         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(app->pair_sets_check))) {
@@ -2245,8 +2216,7 @@ static void checkbox_toggled(GtkToggleButton *button, gpointer user_data)
             if (candidate == series) continue;
             if (candidate->source_file_index == series->source_file_index) continue;
             if (!normalized_names_equal(candidate->name, series->name)) continue;
-            if (!set_series_enabled(app, candidate, requested_enabled) && requested_enabled)
-                rejected_count++;
+            set_series_enabled(app, candidate, requested_enabled);
         }
 
         /* With Pair sets active, selecting a variable establishes its F1
@@ -2261,14 +2231,7 @@ static void checkbox_toggled(GtkToggleButton *button, gpointer user_data)
         }
     }
 
-    if (rejected_count > 0) {
-        snprintf(app->status_notice, sizeof(app->status_notice),
-                 "Log Y axis: %d selected series containing negative values were not enabled.",
-                 rejected_count);
-    }
-    else {
-        app->status_notice[0] = '\0';
-    }
+    app->status_notice[0] = '\0';
 
     /* A paired checkbox selection can change the statistical reference.
        Refresh the Ref/Model controls immediately so the buttons show the
@@ -2281,8 +2244,6 @@ static void checkbox_toggled(GtkToggleButton *button, gpointer user_data)
 static void pair_sets_toggled(GtkToggleButton *button, gpointer user_data)
 {
     AppData *app = (AppData *)user_data;
-    int rejected_count = 0;
-
     if (!gtk_toggle_button_get_active(button)) {
         app->status_notice[0] = '\0';
         update_series_role_controls(app);
@@ -2320,21 +2281,13 @@ static void pair_sets_toggled(GtkToggleButton *button, gpointer user_data)
             if (normalized_names_equal(app->series[i].name, app->series[j].name))
                 should_enable = TRUE_INT;
         }
-        if (should_enable && !set_series_enabled(app, &app->series[i], TRUE_INT))
-            rejected_count++;
+        if (should_enable) set_series_enabled(app, &app->series[i], TRUE_INT);
     }
 
     free(selected_snapshot);
 
-    if (rejected_count > 0) {
-        snprintf(app->status_notice, sizeof(app->status_notice),
-                 "Pair sets enabled; %d matching series containing negative values "
-                 "could not be enabled on the log Y axis.", rejected_count);
-    }
-    else {
-        snprintf(app->status_notice, sizeof(app->status_notice),
-                 "Pair sets enabled; matching selections synchronized across files.");
-    }
+    snprintf(app->status_notice, sizeof(app->status_notice),
+             "Pair sets enabled; matching selections synchronized across files.");
 
     update_series_role_controls(app);
     update_status(app);
@@ -2345,19 +2298,11 @@ static void select_all_clicked(GtkButton *button, gpointer user_data)
 {
     (void)button;
     AppData *app = (AppData *)user_data;
-    int rejected_count = 0;
 
-    for (int i = 0; i < app->n_series; i++) {
-        if (!set_series_enabled(app, &app->series[i], TRUE_INT)) rejected_count++;
-    }
+    for (int i = 0; i < app->n_series; i++)
+        set_series_enabled(app, &app->series[i], TRUE_INT);
 
-    if (rejected_count > 0)
-        snprintf(app->status_notice, sizeof(app->status_notice),
-                 "Log Y axis: selected all except %d series containing negative values.",
-                 rejected_count);
-    else
-        app->status_notice[0] = '\0';
-
+    app->status_notice[0] = '\0';
     update_status(app);
     gtk_widget_queue_draw(app->drawing_area);
 }
@@ -2398,14 +2343,17 @@ static void y_range_toggled(GtkToggleButton *button, gpointer user_data)
 static void integrate_toggled(GtkToggleButton *button, gpointer user_data)
 {
     AppData *app = (AppData *)user_data;
-    int requested = gtk_toggle_button_get_active(button) ? TRUE_INT : FALSE_INT;
+    int requested;
+
+    if (!app || app->updating_controls) return;
+    requested = gtk_toggle_button_get_active(button) ? TRUE_INT : FALSE_INT;
 
     if (requested && !integrated_values_are_cached(app)) {
         if (!build_integrated_values(app)) {
             app->integrate_series = FALSE_INT;
-            g_signal_handlers_block_by_func(button, G_CALLBACK(integrate_toggled), app);
+            app->updating_controls = TRUE_INT;
             gtk_toggle_button_set_active(button, FALSE);
-            g_signal_handlers_unblock_by_func(button, G_CALLBACK(integrate_toggled), app);
+            app->updating_controls = FALSE_INT;
             snprintf(app->status_notice, sizeof(app->status_notice),
                      "Integrate not enabled: insufficient memory for cumulative arrays.");
             update_stats_panel(app);
@@ -2423,13 +2371,13 @@ static void integrate_toggled(GtkToggleButton *button, gpointer user_data)
     update_stats_panel(app);
     update_status(app);
     gtk_widget_queue_draw(app->drawing_area);
+    return;
 }
 
 static void log_y_toggled(GtkToggleButton *button, gpointer user_data)
 {
     AppData *app = (AppData *)user_data;
     int enabled = gtk_toggle_button_get_active(button) ? TRUE_INT : FALSE_INT;
-    int changed_count = 0;
 
     app->log_y_axis = enabled;
 
@@ -2438,51 +2386,16 @@ static void log_y_toggled(GtkToggleButton *button, gpointer user_data)
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->y_positive_radio), TRUE);
         }
         gtk_widget_set_sensitive(app->y_negative_radio, FALSE);
+        snprintf(app->status_notice, sizeof(app->status_notice),
+                 "Log Y axis enabled; only positive values in the displayed window are plotted.");
 
-        for (int i = 0; i < app->n_series; i++) {
-            TimeSeries *series = &app->series[i];
-            if (series->enabled && series_contains_negative_values(series, series->n_records)) {
-                series->enabled = FALSE_INT;
-                series->auto_disabled_for_log = TRUE_INT;
-                changed_count++;
-                g_signal_handlers_block_by_func(series->check_button,
-                                                G_CALLBACK(checkbox_toggled), series);
-                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(series->check_button), FALSE);
-                g_signal_handlers_unblock_by_func(series->check_button,
-                                                  G_CALLBACK(checkbox_toggled), series);
-            }
-        }
-        if (changed_count > 0)
-            snprintf(app->status_notice, sizeof(app->status_notice),
-                     "Log Y axis: deselected %d series containing negative values.",
-                     changed_count);
-        else
-            snprintf(app->status_notice, sizeof(app->status_notice),
-                     "Log Y axis enabled; zero values are omitted.");
     }
     else {
         gtk_widget_set_sensitive(app->y_negative_radio, TRUE);
-        for (int i = 0; i < app->n_series; i++) {
-            TimeSeries *series = &app->series[i];
-            if (series->auto_disabled_for_log) {
-                series->auto_disabled_for_log = FALSE_INT;
-                series->enabled = TRUE_INT;
-                changed_count++;
-                g_signal_handlers_block_by_func(series->check_button,
-                                                G_CALLBACK(checkbox_toggled), series);
-                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(series->check_button), TRUE);
-                g_signal_handlers_unblock_by_func(series->check_button,
-                                                  G_CALLBACK(checkbox_toggled), series);
-            }
-        }
-        if (changed_count > 0)
-            snprintf(app->status_notice, sizeof(app->status_notice),
-                     "Linear Y axis: restored %d automatically deselected series.",
-                     changed_count);
-        else
-            app->status_notice[0] = '\0';
+        app->status_notice[0] = '\0';
     }
 
+    update_stats_panel(app);
     update_status(app);
     gtk_widget_queue_draw(app->drawing_area);
 }
@@ -2594,48 +2507,21 @@ static void update_summary_label(AppData *app)
              "%s\n"
              "Records: %d\n"
              "Variables: %d\n"
-             "Time step: %s",
+             "Time step: %s\n"
+             "\n"
+             "Press F1 for help",
              time_series_type_name(dt_s),
              app->n_records,
              app->n_series,
              dt_text);
 
+
     gtk_label_set_text(GTK_LABEL(app->summary_label), text);
-}
-
-static double estimate_gap_threshold_s(AppData *app)
-{
-    if (!app || app->n_records < 3) return 0.0;
-
-    int n_delta = app->n_records - 1;
-    double *dt = (double *)malloc((size_t)n_delta * sizeof(double));
-    if (!dt) return 0.0;
-
-    int n = 0;
-    for (int i = 1; i < app->n_records; i++) {
-        double d = (app->time_values[i] - app->time_values[i - 1]);
-        if (d > 0.0 && isfinite(d)) dt[n++] = d;
-    }
-
-    if (n <= 0) {
-        free(dt);
-        return 0.0;
-    }
-
-    qsort(dt, (size_t)n, sizeof(double), compare_double_for_qsort);
-    double median_dt = dt[n / 2];
-    free(dt);
-
-    if (median_dt <= 0.0 || !isfinite(median_dt)) return 0.0;
-
-    /* Treat intervals more than 2.5 sample periods as data gaps.
-       Example: a 5-minute logger cadence breaks lines across gaps > 12.5 minutes. */
-    return 2.5 * median_dt;
 }
 
 static void free_integrated_values(AppData *app)
 {
-    if (!app) return;
+    if (!app || app->updating_controls) return;
     for (int s = 0; s < app->n_series; s++) {
         free(app->series[s].integrated_values);
         app->series[s].integrated_values = NULL;
@@ -2890,10 +2776,12 @@ static gboolean draw_plot(GtkWidget *widget, cairo_t *cr, gpointer user_data)
     int log_exp_max = 0;
 
     if (have_minmax && app->log_y_axis) {
+        /* Keep the ordinate limits tied to the actual positive values in the
+           visible window.  The exponent bounds are used only to place log
+           grid lines and labels; do not expand the data range to whole
+           decades, which can severely compress closely spaced series. */
         log_exp_min = (int)floor(log10(ymin));
         log_exp_max = (int)ceil(log10(ymax));
-        ymin = pow(10.0, (double)log_exp_min);
-        ymax = pow(10.0, (double)log_exp_max);
     }
     else if (have_minmax) {
         tick_spacing = nice_tick_spacing(ymax - ymin, 6);
@@ -2977,6 +2865,7 @@ static gboolean draw_plot(GtkWidget *widget, cairo_t *cr, gpointer user_data)
     if (have_minmax && app->log_y_axis) {
         for (int exponent = log_exp_min; exponent <= log_exp_max; exponent++) {
             double value = pow(10.0, (double)exponent);
+            if (value < ymin || value > ymax) continue;
             double y = y_value_to_screen(app, value, ymin, ymax, y0, y1);
             if (exponent >= -3 && exponent <= 4)
                 snprintf(label, sizeof(label), "%.6g", value);
@@ -3358,20 +3247,19 @@ static void update_series_role_controls(AppData *app)
         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(app->pair_sets_check)))
         ? TRUE_INT : FALSE_INT;
 
+    app->updating_controls = TRUE_INT;
+
     for (int i = 0; i < app->n_series; i++) {
         TimeSeries *series = &app->series[i];
+
         if (series->reference_button) {
-            g_signal_handlers_block_by_func(series->reference_button,
-                                            G_CALLBACK(reference_button_toggled), series);
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(series->reference_button),
                                          i == app->reference_series_index);
-            g_signal_handlers_unblock_by_func(series->reference_button,
-                                              G_CALLBACK(reference_button_toggled), series);
         }
+
         if (series->model_button) {
-            g_signal_handlers_block_by_func(series->model_button,
-                                            G_CALLBACK(model_button_toggled), series);
             int paired_model_active = FALSE_INT;
+
             if (pair_sets_active &&
                 app->reference_series_index >= 0 &&
                 app->reference_series_index < app->n_series &&
@@ -3382,15 +3270,16 @@ static void update_series_role_controls(AppData *app)
                     app->series[app->reference_series_index].name)) {
                 paired_model_active = TRUE_INT;
             }
+
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(series->model_button),
                                          pair_sets_active
                                          ? paired_model_active
                                          : i == app->model_series_index);
-            gtk_widget_set_sensitive(series->model_button, !pair_sets_active);
-            g_signal_handlers_unblock_by_func(series->model_button,
-                                              G_CALLBACK(model_button_toggled), series);
+            gtk_widget_set_sensitive(series->model_button, TRUE);
         }
     }
+
+    app->updating_controls = FALSE_INT;
 }
 
 static void reference_button_toggled(GtkToggleButton *button, gpointer user_data)
@@ -3399,7 +3288,7 @@ static void reference_button_toggled(GtkToggleButton *button, gpointer user_data
     AppData *app = g_object_get_data(G_OBJECT(button), "app");
     int index = -1;
 
-    if (!app) return;
+    if (!app || app->updating_controls) return;
     for (int i = 0; i < app->n_series; i++) {
         if (&app->series[i] == series) {
             index = i;
@@ -3431,9 +3320,13 @@ static void model_button_toggled(GtkToggleButton *button, gpointer user_data)
     AppData *app = g_object_get_data(G_OBJECT(button), "app");
     int index = -1;
 
-    if (!app) return;
+    if (!app || app->updating_controls) return;
     if (app->pair_sets_check &&
-        gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(app->pair_sets_check))) return;
+        gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(app->pair_sets_check))) {
+        update_series_role_controls(app);
+        update_status(app);
+        return;
+    }
 
     for (int i = 0; i < app->n_series; i++) {
         if (&app->series[i] == series) {
@@ -3520,11 +3413,142 @@ static void build_series_panel(AppData *app)
     update_series_role_controls(app);
 }
 
+static void help_window_destroyed(GtkWidget *widget, gpointer user_data)
+{
+    AppData *app = (AppData *)user_data;
+    (void)widget;
+    if (app) app->help_window = NULL;
+}
+
+static gboolean help_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
+{
+    (void)user_data;
+    if (!event) return FALSE;
+    if (event->keyval == GDK_KEY_Escape) {
+        gtk_widget_destroy(widget);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void show_help_window(AppData *app)
+{
+    static const char help_text[] =
+        "tsviewer " TSVIEWER_VERSION " - Interactive Scientific Time-Series Viewer\n\n"
+        "COMMAND LINE\n"
+        "  tsviewer file1 [file2] [file3] [file4]\n\n"
+        "PLOTTING SERIES\n"
+        "  Use the check button beside each variable to show or hide it.\n"
+        "  'Select all' and 'Select none' change all plotted series at once.\n"
+        "  If more than one file is opened and they have common series labels\n"
+        "  then 'Pair sets' causes selection of like sets in each file.\n"
+        "  Using 'Select none' and 'Pair sets' allows investigation of selected\n"
+        "  series one at a time.  With 'Pair sets' active, newly selected series\n"
+        "  assumes that the selected series in file one is the reference.\n"
+        "  Color identifies a variable; line style identifies the source file.\n"
+        "  'Match variable colors' uses same line colors to denote matching\n"
+        "  series in each input file.   Line styles are different for each file\n"
+        "  deselecting 'Match variable colors' can help disambiguate.\n\n"
+        "NAVIGATION\n"
+        "  Mouse wheel       Zoom in or out, centered on the cursor.\n"
+        "  Left-click/drag   Select an interval and zoom to it.\n"
+        "  Scroll bar        Pan horizontally after zooming.\n"
+        "  Right-click       Reset to the full data record.\n"
+        "  R                 Reset to the full data record.\n"
+        "  F1                Open this help window.\n"
+        "  Esc               Quit tsviewer.\n\n"
+        "REFERENCE AND MODEL STATISTICS\n"
+        "  Select one series as Ref and a different series as Model.\n"
+        "  Statistics are calculated over the visible interval, or over the\n"
+        "  selected interval while a selection is active.\n"
+        "  NSE and KGE require exactly matching coordinates; no interpolation\n"
+        "  or hidden alteration of the input data is performed.\n\n"
+        "PAIR SETS\n"
+        "  With multiple files loaded, Pair sets synchronizes variables having\n"
+        "  matching names. File 1 supplies the statistical reference. Matching\n"
+        "  selected series in Files 2-4 are evaluated as models. The Ref and\n"
+        "  Model buttons show exactly which series participate in the comparison.\n\n"
+        "LOG Y AXIS\n"
+        "  Log Y axis plots positive values using log10 scaling. When Ref and\n"
+        "  Model are selected, NSE_log(x) and KGE_log(x) are calculated from\n"
+        "  log10-transformed values. This calculation is performed only if both\n"
+        "  series are everywhere strictly greater than zero over the comparison\n"
+        "  interval. No epsilon or offset is added to the data.\n\n"
+        "Y RANGE\n"
+        "  All, Positive only, and Negative only control which values determine\n"
+        "  the displayed Y range. Negative-only display is unavailable with a\n"
+        "  logarithmic Y axis.\n\n"
+        "INTEGRATE\n"
+        "  Integrate displays a cumulative trapezoidal integral. For calendar\n"
+        "  time series, time increments are expressed in hours.\n\n"
+        "INPUT DATA\n"
+        "  tsviewer accepts common columnar scientific ASCII data, including\n"
+        "  comma-, tab-, pipe-, and whitespace-delimited files, Campbell\n"
+        "  Scientific TOA5 data, AmeriFlux timestamps, Julian Date, Modified\n"
+        "  Julian Date, Unix time, common calendar timestamps, year/month and\n"
+        "  year-only summaries, and generic numeric abscissas.\n\n"
+        "  Press Esc to close this help window.\n\n"
+        "  tsviewer, (C) 2026 Fred L. Ogden\n"
+        "  Licensed under the Apache License, version 2.0.\n";
+        
+    GtkAllocation allocation;
+    GtkWidget *scrolled;
+    GtkWidget *text_view;
+    GtkTextBuffer *buffer;
+    int help_width = 400;
+    int help_height = 500;
+
+    if (!app) return;
+    if (app->help_window) {
+        gtk_window_present(GTK_WINDOW(app->help_window));
+        return;
+    }
+
+    if (app->drawing_area) {
+        gtk_widget_get_allocation(app->drawing_area, &allocation);
+        if (allocation.width > 0) help_width = allocation.width / 3;
+        if (allocation.height > 0) help_height = (int)(0.80 * (double)allocation.height);
+    }
+    app->help_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(app->help_window), "tsviewer Help");
+    gtk_window_set_transient_for(GTK_WINDOW(app->help_window), GTK_WINDOW(app->window));
+    gtk_window_set_default_size(GTK_WINDOW(app->help_window), help_width, help_height);
+    gtk_window_set_position(GTK_WINDOW(app->help_window), GTK_WIN_POS_CENTER_ON_PARENT);
+    g_signal_connect(app->help_window, "destroy",
+                     G_CALLBACK(help_window_destroyed), app);
+    g_signal_connect(app->help_window, "key-press-event",
+                     G_CALLBACK(help_key_press), app);
+
+    scrolled = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled),
+                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_container_set_border_width(GTK_CONTAINER(scrolled), 8);
+    gtk_container_add(GTK_CONTAINER(app->help_window), scrolled);
+
+    text_view = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(text_view), FALSE);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(text_view), FALSE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(text_view), GTK_WRAP_WORD_CHAR);
+    gtk_text_view_set_left_margin(GTK_TEXT_VIEW(text_view), 10);
+    gtk_text_view_set_right_margin(GTK_TEXT_VIEW(text_view), 10);
+    gtk_text_view_set_top_margin(GTK_TEXT_VIEW(text_view), 10);
+    gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(text_view), 10);
+    buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text_view));
+    gtk_text_buffer_set_text(buffer, help_text, -1);
+    gtk_container_add(GTK_CONTAINER(scrolled), text_view);
+
+    gtk_widget_show_all(app->help_window);
+}
+
 static gboolean key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
 {
     (void)widget;
     AppData *app = (AppData *)user_data;
     if (!event) return FALSE;
+    if (event->keyval == GDK_KEY_F1) {
+        show_help_window(app);
+        return TRUE;
+    }
     if (event->keyval == GDK_KEY_Escape) {
         gtk_main_quit();
         return TRUE;
@@ -3657,9 +3681,11 @@ static void build_gui(AppData *app)
     gtk_label_set_max_width_chars(GTK_LABEL(app->stats_label), 48);
     gtk_label_set_line_wrap(GTK_LABEL(app->stats_label), TRUE);
     gtk_label_set_line_wrap_mode(GTK_LABEL(app->stats_label), PANGO_WRAP_WORD_CHAR);
-    PangoFontDescription *stats_font = pango_font_description_from_string("Monospace 9");
-    gtk_widget_override_font(app->stats_label, stats_font);
-    pango_font_description_free(stats_font);
+    PangoAttrList *stats_attributes = pango_attr_list_new();
+    pango_attr_list_insert(stats_attributes, pango_attr_family_new("Monospace"));
+    pango_attr_list_insert(stats_attributes, pango_attr_size_new(9 * PANGO_SCALE));
+    gtk_label_set_attributes(GTK_LABEL(app->stats_label), stats_attributes);
+    pango_attr_list_unref(stats_attributes);
     gtk_box_pack_start(GTK_BOX(left_panel), app->stats_label, FALSE, FALSE, 6);
 
     app->drawing_area = gtk_drawing_area_new();
@@ -3758,12 +3784,15 @@ static void usage(const char *progname)
 "    generic numeric coordinates.  Calendar and numeric axes cannot be mixed.\n"
 "    Color identifies variable; line style identifies source file.\n"
 "\n"
-"Hydrologic model evaluation:\n"
-"    Use Ref and Model to compare any two series, including two series from one\n"
-"    file.  With Pair sets enabled, file1 is the reference and every selected\n"
-"    matching series in files 2-4 is evaluated as a model.  NSE and KGE use\n"
-"    exactly matching coordinates over the displayed interval; no interpolation\n"
-"    is used.\n"
+"Time series evaluation metrics:\n"
+"   Use Ref and Model to compare any two series, including two series from one\n"
+"   file.  With Pair sets enabled, file1 is the reference and every selected\n"
+"   matching series in files 2-4 is evaluated as a model.  NSE and KGE use\n"
+"   exactly matching coordinates over the displayed interval; no interpolation\n"
+"   is used.  With Log Y axis enabled, NSE_log(x) and KGE_log(x) are calculated\n"
+"   from log10-transformed values when both series are everywhere >0 over the\n"
+"   evaluation interval.  Values <= 0 in the evaluation interval make\n"
+"   calculation of these metrics impossible.\n"
 "\n"
 "Examples:\n"
 "    %s observed.csv\n"

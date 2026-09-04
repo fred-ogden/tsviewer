@@ -318,6 +318,11 @@ The program is meant to be the plotting tool that is easy enough to invoke repea
 - **v1.01** - Screen-relative initial window sizing and stable status layout
 - **v1.02** - Mouse-wheel zoom centered on the cursor and constrained to data extents
 - **v1.03** - Improved series-panel layout and automatic paired statistical-role selection
+- **v1.04** - Added built-in F1 help; improved Pair sets Ref/Model visual
+              feedback; added NSE_log(x) and KGE_log(x) evaluation for positive data
+              displayed on the logarithmic Y axis; log display now operates on the
+              selected interval without rejecting series because of non-positive values
+              elsewhere in the record; compiler-warning cleanup.
 
 ## Author
 
@@ -333,4 +338,4 @@ Copyright 2026 Fred L. Ogden
 
 Licensed under the **Apache License, Version 2.0**.
 
-See `LICENSE` for the full license text.
+See `LICENSE-2.0.txt` for the full license text.
