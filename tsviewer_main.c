@@ -25,11 +25,11 @@
 #define MAX_LINE 8192
 #define MAX_INPUT_FILES 4
 #define BAD_VALUE -9999.0
-#define TSVIEWER_VERSION "1.04"
+#define TSVIEWER_VERSION "1.05"
 
 /* ---------------------------------------------------------------------
  * tsviewer -- Interactive Scientific Time-Series Viewer
- * Conceived by Fred L. Ogden to view Campbell Scientific TOA5 files
+ * Conceived by Fred L. Ogden to view Campbell Scientific TOA5 formatted ascii output files
  * 
  * Copyright [2026] [Fred L. Ogden]
  *
@@ -47,16 +47,17 @@
  *
  * Written by Fred L. Ogden with considerable assistance from ChatGPT.
  * 
- * Philosophy: If the file contains delimited numeric data, use a recognized
- *             time coordinate in column 1 or column 2, or otherwise use a
- *             finite numeric abscissa in column 1, then plot the remaining
- *             numeric columns against that coordinate in an X window using
- *             GTK3 graphical library functions.  A time-like field appearing
- *             after column 2 is not treated as the primary coordinate.
- *             For an unrecognized numeric abscissa, no units, time origin,
- *             sampling interval, or calendar meaning are inferred.
+ * Philosophy: If an ascii file contains delimited numeric data, uses a 
+ *             recognizeable time coordinate in column 1 or column 2, 
+ *             or otherwise uses a finite numeric abscissa in column 1,
+ *             then plot the remaining numeric columns against that 
+ *             coordinate in a window using GTK3 graphical library functions.
+ *             A time-like field appearing after column 2 is not treated as
+ *             the primary coordinate. For an unrecognized numeric abscissa,
+ *             no units, time origin, sampling interval, or calendar meaning
+ *             is inferred.
  *
- * Valid generic layouts include:
+ * Valid generic layouts include (JD = Julian date, MJD= modified Julian date)
  *
  *   JD,v1,v2,...,vN
  *   MJD,v1,v2,...,vN
@@ -66,12 +67,14 @@
  *   index,date-time,v1,v2,...,vN
  *   index,v1,v2,...,vN
  *
- * AmeriFlux and AORC files remain supported.  Unix epoch seconds and
+ * AmeriFlux and AORC files are supported.  Unix epoch seconds and
  * milliseconds are recognized in column 1 or column 2.  Date/time fields
  * in column 3 or later do not define the plotting coordinate.
  *
  * Design Goals:
  *
+ *   - Ignore comment lines starting with #
+ *   - Apply column headers/data labels with units support
  *   - Automatic recognition of common scientific data formats.
  *   - No external dependencies beyond GTK3 and the C standard library.
  *   - Portable ISO C99 implementation.
@@ -105,19 +108,21 @@
  *  v0.7: Multi-file comparison, NSE/KGE, July, 2026
  *  v0.7.1: Generic numeric abscissa support, July, 2026
  *  v0.7.2: Timezone-independent calendar handling, nonfatal abcissa
- *          reversals, and redraw-performance improvements, July 2026
- *  v0.8: Set-selection controls and paired multi-file selection, July 2026
- *  v0.9: First- or second-column time-coordinate detection, July 2026
+ *          reversals, and redraw-performance improvements, July, 2026
+ *  v0.8: Set-selection controls and paired multi-file selection, July, 2026
+ *  v0.9: First- or second-column time-coordinate detection, July, 2026
  *  v1.0: Explicit reference/model statistical selection and multi-model
- *        NSE/KGE evaluation, August 2026
+ *        NSE/KGE evaluation, autoscaling, August, 2026
  *  v1.01: Screen-relative initial window size and stable status-label layout,
- *         August 2026
+ *         August, 2026
  *  v1.02: Mouse-wheel zoom centered on cursor, constrained to data extents,
- *         August 2026
+ *         August, 2026
  *  v1.03: Constrained series-panel width and automatic paired statistical
- *         role selection, August 2026
+ *         role selection, August, 2026
  *  v1.04: Pair-set role feedback, log-transformed NSE/KGE, and F1 help,
- *         September 2026
+ *         September, 2026
+ *  v1.05: If multiple files imported, put "pair sets" on by default. 
+ *         September, 2026
  *
  * --------------------------------------------------------------------- */
 
@@ -750,7 +755,7 @@ static int load_toa5_csv(AppData *app, const char *filename)
         int col = i + 2;
         app->series[i].name = strdup(row2[col]);
         app->series[i].units = (col < n3) ? strdup(row3[col]) : strdup("");
-        app->series[i].enabled = (i < 6) ? TRUE_INT : FALSE_INT;
+        app->series[i].enabled = TRUE_INT;
         app->series[i].auto_disabled_for_log = FALSE_INT;
         app->series[i].red = palette[i % palette_count][0];
         app->series[i].green = palette[i % palette_count][1];
@@ -1002,7 +1007,7 @@ static int initialize_generic_series(AppData *app, char **header_fields, int n_f
             app->series[i].name = strdup(name_buf);
         }
         app->series[i].units = strdup("");
-        app->series[i].enabled = (i < 6) ? TRUE_INT : FALSE_INT;
+        app->series[i].enabled = TRUE_INT;
         app->series[i].auto_disabled_for_log = FALSE_INT;
         app->series[i].red = palette[i % palette_count][0];
         app->series[i].green = palette[i % palette_count][1];
@@ -3652,6 +3657,8 @@ static void build_gui(AppData *app)
     gtk_box_pack_start(GTK_BOX(selection_box),
                        app->match_variable_colors_check, FALSE, FALSE, 2);
     gtk_widget_set_sensitive(app->pair_sets_check, app->n_files > 1);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->pair_sets_check),
+                                 app->n_files > 1);
     gtk_box_pack_start(GTK_BOX(control_row), selection_frame, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(left_panel), control_row, FALSE, FALSE, 0);
 

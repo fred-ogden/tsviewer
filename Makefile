@@ -3,7 +3,7 @@ CFLAGS=-Wall -Wextra -O2 -std=c99 -pedantic $(shell pkg-config --cflags gtk+-3.0
 LIBS=$(shell pkg-config --libs gtk+-3.0) -lm
 
 TARGET=tsviewer
-SRC=main.c
+SRC=tsviewer_main.c
 
 all: $(TARGET)
 
