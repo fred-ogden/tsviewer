@@ -17,6 +17,13 @@
 
 #define TRUE_INT 1
 #define FALSE_INT 0
+
+#ifdef _WIN32
+/* timegm(), strptime() and a few GTK prototypes the Windows GTK3 bundle is
+   missing.  Not compiled on Linux. */
+#include "windows/tsviewer_win32_compat.h"
+#endif
+
 #define DEFAULT_VIEW_DAYS 31.0
 #define LEFT_MARGIN 70.0
 #define RIGHT_MARGIN 25.0

@@ -17,6 +17,8 @@ Building `tsviewer` requires:
 
 GTK3 normally brings in Cairo and the other graphical libraries required by the application.
 
+These are the requirements for building on Linux. On Windows nothing needs to be built; see **Windows** below.
+
 ## Linux
 
 The exact package names depend on the Linux distribution.
@@ -124,6 +126,63 @@ Rebuild with:
 make
 ```
 
+## Windows
+
+A ready-to-run Windows build is attached to each release. Nothing needs to be compiled or installed.
+
+### Download
+
+Download `tsviewer-<version>-win64.zip` from the releases page:
+
+https://github.com/fred-ogden/tsviewer/releases
+
+### Unzip
+
+Extract the zip to a permanent location, for example:
+
+```text
+C:\Users\<you>\tsviewer-<version>-win64
+```
+
+The folder holds `tsviewer.exe`, the GTK3 libraries it needs, and the `examples` directory. Keep the files together; `tsviewer.exe` will not start without the libraries beside it.
+
+### Add it to your PATH
+
+1. Open the Start menu, search for **environment variables**, and choose *Edit environment variables for your account*.
+2. Under *User variables*, select `Path` and click *Edit*.
+3. Click *New* and paste the full path of the unzipped folder.
+4. Click *OK* in each window.
+
+Administrator rights are not required. Open a new command prompt afterwards; windows that were already open do not see the change.
+
+### Run
+
+```text
+tsviewer --help
+tsviewer data.csv
+tsviewer observed.csv model.csv
+```
+
+A console window accompanies the graphical window, so that `--help` and error messages are visible.
+
+### Differences from the Linux build
+
+A small number of stock icons in GTK dialogs may be missing. This is cosmetic.
+
+Timestamps earlier than 1970 are not accepted in the compact `YYYYMMDDHHMM` and `YYYYMMDDHHMMSS` formats, because the Windows C library cannot represent them. All other supported abscissa formats behave identically.
+
+### Building the Windows zip
+
+This is only needed by maintainers. Publishing a GitHub release runs `.github/workflows/windows-release.yml`, which cross-compiles the zip on Linux and attaches it to the release automatically.
+
+To build it locally, install a mingw-w64 cross compiler together with `wget`, `unzip` and `zip` (on Debian/Ubuntu: `sudo apt install gcc-mingw-w64 wget unzip zip`), then run:
+
+```text
+make windows-zip
+```
+
+The first run downloads a prebuilt GTK3 bundle, roughly 11 MB, into the `windows` directory. Everything Windows-specific lives in that directory.
+
 ## Installation in your PATH
 
 It is not necessary to install `tsviewer` system-wide. The executable can be run directly from the repository directory.
@@ -147,6 +206,8 @@ Alternatively, individual users can place the executable in a personal `bin` dir
 `tsviewer` is a graphical GTK3 application and therefore requires a graphical display environment.
 
 On Linux systems it is intended for use under a normal X11 or compatible GTK desktop environment.
+
+On Windows it runs as an ordinary desktop application, provided the GTK3 DLLs shipped in the zip remain in the same folder as `tsviewer.exe`.
 
 When running on a remote machine through SSH, graphical forwarding must be configured if the display is to appear on the local workstation.
 

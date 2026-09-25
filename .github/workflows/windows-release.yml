@@ -1,0 +1,29 @@
+# Cross-compiles the Windows zip and attaches it to each published release.
+
+name: Windows release build
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64 wget unzip zip
+
+      - name: Build the zip
+        run: make windows-zip
+
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload '${{ github.event.release.tag_name }}' tsviewer-*-win64.zip --clobber
