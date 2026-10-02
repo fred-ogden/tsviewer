@@ -32,7 +32,7 @@
 #define MAX_LINE 8192
 #define MAX_INPUT_FILES 4
 #define BAD_VALUE -9999.0
-#define TSVIEWER_VERSION "1.05"
+#define TSVIEWER_VERSION "1.06"
 
 /* ---------------------------------------------------------------------
  * tsviewer -- Interactive Scientific Time-Series Viewer

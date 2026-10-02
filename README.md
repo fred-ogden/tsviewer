@@ -8,7 +8,7 @@ It was developed by **Fred L. Ogden** from decades of experience working with en
 
 > When comparing two versions of a model, changes in parameter value, observations against simulations, or the output before and after a code change, the fastest way to understand what happened is often to look carefully at the time series.
 
-Many plotting packages can produce beautiful publication figures. `tsviewer` is aimed at a different job: **getting scientific data on the screen quickly, navigating it interactively, and making differences between data sets easy to find.**
+Many plotting packages can produce beautiful publication figures. `tsviewer` is aimed at a different job: **getting scientific data on the screen quickly, navigating it interactively, and making differences between data sets easy to find and see.**
 
 It is particularly useful during model development and regression testing, where the important questions are often very simple:
 
@@ -18,6 +18,7 @@ It is particularly useful during model development and regression testing, where
 - Which state variables or fluxes changed?
 - Are differences small numerical perturbations or meaningful changes in model behavior?
 - How well does a modeled series reproduce a reference or observed series?
+- If I integrate two different model time series of the same variable over time, how different are they?
 
 `tsviewer` was built to answer those questions with as little friction as possible.
 
@@ -323,6 +324,8 @@ The program is meant to be the plotting tool that is easy enough to invoke repea
               displayed on the logarithmic Y axis; log display now operates on the
               selected interval without rejecting series because of non-positive values
               elsewhere in the record; compiler-warning cleanup.
+- **v1.05** - change to default radio button settings when more than one file is displayed.
+- **v1.06** - Compile options for MS Windows using mingw (contributed by JoshCu) Thanks!
 
 ## Author
 
