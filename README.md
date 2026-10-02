@@ -339,6 +339,8 @@ The program reflects the author's experience with scientific observation, hydrol
 
 Copyright 2026 Fred L. Ogden
 
+Contributions remain copyright of their respective authors.
+
 Licensed under the **Apache License, Version 2.0**.
 
 See `LICENSE-2.0.txt` for the full license text.
