@@ -71,6 +71,7 @@
  *   JD,YYYY-MM-DD hh:mm:ss,v1,v2,...,vN
  *   YYYY-MM-DD,v1,v2,...,vN
  *   YYYY-MM-DD hh:mm:ss,v1,v2,...,vN
+ *   YYYY-MM-DD hh:mm:ss.ssss,v1,v2,...,vN
  *   index,date-time,v1,v2,...,vN
  *   index,v1,v2,...,vN
  *
@@ -130,6 +131,8 @@
  *         September, 2026
  *  v1.05: If multiple files imported, put "pair sets" on by default. 
  *         September, 2026
+ *  v1.06: Modified to compile on MS Windows using mingw
+ *         Added option to disable data gap detection, Oct. 2026
  *
  * --------------------------------------------------------------------- */
 
@@ -223,6 +226,7 @@ typedef struct {
     GtkWidget *y_negative_radio;
     GtkWidget *log_y_check;
     GtkWidget *integrate_check;
+    GtkWidget *detect_gaps_check;
     GtkWidget *pair_sets_check;
     GtkWidget *match_variable_colors_check;
     GtkWidget *help_window;
@@ -231,6 +235,7 @@ typedef struct {
     YRangeMode y_range_mode;
     int log_y_axis;
     int integrate_series;
+    int detect_time_gaps;
     int match_variable_colors;
     char status_notice[512];
 
@@ -451,7 +456,7 @@ static int parse_csv_line(const char *line, char ***fields_out)
     return n_fields;
 }
 
-static int parse_timestamp_text(const char *s, time_t *t_out, TimestampFormat *format_out)
+static int parse_timestamp_text(const char *s, time_t *t_out, double *fractional_seconds_out, TimestampFormat *format_out)
 {
     static const char *datetime_formats[] = {
         "%Y-%m-%d %H:%M:%S",
@@ -471,6 +476,7 @@ static int parse_timestamp_text(const char *s, time_t *t_out, TimestampFormat *f
     int n_datetime_formats = (int)(sizeof(datetime_formats) / sizeof(datetime_formats[0]));
     int n_date_only_formats = (int)(sizeof(date_only_formats) / sizeof(date_only_formats[0]));
     if (!s || !*s || !t_out) return FALSE_INT;
+    if (fractional_seconds_out) *fractional_seconds_out = 0.0;
 
     for (int i = 0; i < n_datetime_formats; i++) {
         struct tm tm_value;
@@ -478,11 +484,27 @@ static int parse_timestamp_text(const char *s, time_t *t_out, TimestampFormat *f
         tm_value.tm_isdst = -1;
         char *end = strptime(s, datetime_formats[i], &tm_value);
         if (end) {
+            double fractional_seconds = 0.0;
+
+            /* strptime() parses only integral seconds.  Accept an optional
+               decimal fraction immediately following %S, e.g. 13:58:43.5. */
+            if (strstr(datetime_formats[i], "%S") && *end == '.') {
+                char *fraction_end = NULL;
+                errno = 0;
+                fractional_seconds = strtod(end, &fraction_end);
+                if (errno || fraction_end == end ||
+                    fractional_seconds < 0.0 || fractional_seconds >= 1.0) {
+                    continue;
+                }
+                end = fraction_end;
+            }
+
             while (*end && isspace((unsigned char)*end)) end++;
             if (*end == '\0') {
                 time_t t = timegm(&tm_value);
                 if (t != (time_t)-1) {
                     *t_out = t;
+                    if (fractional_seconds_out) *fractional_seconds_out = fractional_seconds;
                     if (format_out) *format_out = TIMESTAMP_FORMAT_TEXT;
                     return TRUE_INT;
                 }
@@ -648,9 +670,10 @@ static int parse_numeric_timestamp(const char *s, time_t *t_out, TimestampFormat
     return FALSE_INT;
 }
 
-static int parse_timestamp_any(const char *s, time_t *t_out, TimestampFormat *format_out)
+static int parse_timestamp_any(const char *s, time_t *t_out, double *fractional_seconds_out, TimestampFormat *format_out)
 {
     TimestampFormat local_format = TIMESTAMP_FORMAT_UNKNOWN;
+    if (fractional_seconds_out) *fractional_seconds_out = 0.0;
     if (parse_compact_timestamp(s, t_out, &local_format)) {
         if (format_out) *format_out = local_format;
         return TRUE_INT;
@@ -659,7 +682,7 @@ static int parse_timestamp_any(const char *s, time_t *t_out, TimestampFormat *fo
         if (format_out) *format_out = local_format;
         return TRUE_INT;
     }
-    if (parse_timestamp_text(s, t_out, &local_format)) {
+    if (parse_timestamp_text(s, t_out, fractional_seconds_out, &local_format)) {
         if (format_out) *format_out = local_format;
         return TRUE_INT;
     }
@@ -779,12 +802,13 @@ static int load_toa5_csv(AppData *app, const char *filename)
         }
 
         time_t t = (time_t)-1;
-        if (!parse_timestamp_any(fields[0], &t, NULL)) {
+        double fractional_seconds = 0.0;
+        if (!parse_timestamp_any(fields[0], &t, &fractional_seconds, NULL)) {
             free_csv_fields(fields, nf);
             continue;
         }
 
-        double x_value = (double)t;
+        double x_value = (double)t + fractional_seconds;
         if (app->n_records > 0) {
             double previous_x = app->time_values[app->n_records - 1];
             if (x_value < previous_x) {
@@ -1049,6 +1073,8 @@ static int detect_interval_timestamp_columns(char **fields, int nf, int *time_co
 {
     time_t t0 = (time_t)-1;
     time_t t1 = (time_t)-1;
+    double fractional_seconds0 = 0.0;
+    double fractional_seconds1 = 0.0;
     TimestampFormat tf0 = TIMESTAMP_FORMAT_UNKNOWN;
     TimestampFormat tf1 = TIMESTAMP_FORMAT_UNKNOWN;
     int col0_is_time;
@@ -1056,14 +1082,14 @@ static int detect_interval_timestamp_columns(char **fields, int nf, int *time_co
 
     if (!fields || nf < 1 || !time_col_out || !first_data_col_out) return FALSE_INT;
 
-    col0_is_time = parse_timestamp_any(fields[0], &t0, &tf0);
-    col1_is_time = (nf >= 2) ? parse_timestamp_any(fields[1], &t1, &tf1) : FALSE_INT;
+    col0_is_time = parse_timestamp_any(fields[0], &t0, &fractional_seconds0, &tf0);
+    col1_is_time = (nf >= 2) ? parse_timestamp_any(fields[1], &t1, &fractional_seconds1, &tf1) : FALSE_INT;
 
     /* Preserve the established two-timestamp interval convention, including
        AmeriFlux start/end timestamps.  The interval end is the coordinate. */
     if (col0_is_time && col1_is_time &&
         timestamp_formats_are_interval_compatible(tf0, tf1) &&
-        difftime(t1, t0) > 0.0) {
+        ((double)t1 + fractional_seconds1) > ((double)t0 + fractional_seconds0)) {
         *time_col_out = 1;
         *first_data_col_out = 2;
         if (format_out) {
@@ -1123,6 +1149,7 @@ static int process_generic_data_fields(AppData *app, char **fields, int nf, int 
     if (!app || !fields || nf <= time_col) return TRUE_INT;
 
     time_t t = (time_t)-1;
+    double fractional_seconds = 0.0;
     double x_value = NAN;
     TimestampFormat tf = TIMESTAMP_FORMAT_UNKNOWN;
 
@@ -1134,8 +1161,8 @@ static int process_generic_data_fields(AppData *app, char **fields, int nf, int 
     } else if (detected_format && *detected_format == TIMESTAMP_FORMAT_NUMERIC_ABSCISSA) {
         if (!parse_double_or_nan(fields[time_col], &x_value) || !isfinite(x_value)) return TRUE_INT;
         tf = TIMESTAMP_FORMAT_NUMERIC_ABSCISSA;
-    } else if (parse_timestamp_any(fields[time_col], &t, &tf)) {
-        x_value = (double)t;
+    } else if (parse_timestamp_any(fields[time_col], &t, &fractional_seconds, &tf)) {
+        x_value = (double)t + fractional_seconds;
     } else {
         if (!parse_double_or_nan(fields[time_col], &x_value) || !isfinite(x_value)) return TRUE_INT;
         tf = TIMESTAMP_FORMAT_NUMERIC_ABSCISSA;
@@ -1498,7 +1525,7 @@ static int line_first_field_is_coordinate_delimited(const char *line,
         time_t t;
         TimestampFormat tf = TIMESTAMP_FORMAT_UNKNOWN;
 
-        if (parse_timestamp_any(fields[0], &t, &tf)) {
+        if (parse_timestamp_any(fields[0], &t, NULL, &tf)) {
             ok = TRUE_INT;
             if (format_out) *format_out = tf;
         } else {
@@ -2412,6 +2439,14 @@ static void log_y_toggled(GtkToggleButton *button, gpointer user_data)
     gtk_widget_queue_draw(app->drawing_area);
 }
 
+static void detect_gaps_toggled(GtkToggleButton *button, gpointer user_data)
+{
+    AppData *app = (AppData *)user_data;
+    app->detect_time_gaps =
+        gtk_toggle_button_get_active(button) ? TRUE_INT : FALSE_INT;
+    gtk_widget_queue_draw(app->drawing_area);
+}
+
 static void match_variable_colors_toggled(GtkToggleButton *button, gpointer user_data)
 {
     AppData *app = (AppData *)user_data;
@@ -2987,7 +3022,8 @@ static gboolean draw_plot(GtkWidget *widget, cairo_t *cr, gpointer user_data)
            Cache the threshold after computing it once.  The previous code
            bubble-sorted every positive time increment during every redraw,
            which made drawing O(n^2) and caused multi-second GUI delays. */
-        if (app->axis_type == AXIS_TYPE_CALENDAR_TIME && series->n_records > 1) {
+        if (app->detect_time_gaps &&
+            app->axis_type == AXIS_TYPE_CALENDAR_TIME && series->n_records > 1) {
             if (!series->gap_threshold_computed) {
                 double *dts = malloc((size_t)(series->n_records - 1) * sizeof(double));
                 series->gap_threshold_s = 0.0;
@@ -3493,6 +3529,11 @@ static void show_help_window(AppData *app)
         "INTEGRATE\n"
         "  Integrate displays a cumulative trapezoidal integral. For calendar\n"
         "  time series, time increments are expressed in hours.\n\n"
+        "TIME GAPS\n"
+        "  Detect time gaps is enabled by default for calendar-time data. Lines\n"
+        "  are broken when an interval exceeds 1.5 times the median positive\n"
+        "  time interval. Disable it for inherently irregular event data such\n"
+        "  as tipping-bucket rainfall observations.\n\n"
         "INPUT DATA\n"
         "  tsviewer accepts common columnar scientific ASCII data, including\n"
         "  comma-, tab-, pipe-, and whitespace-delimited files, Campbell\n"
@@ -3638,6 +3679,9 @@ static void build_gui(AppData *app)
     app->y_negative_radio = gtk_radio_button_new_with_label(y_group, "Negative only");
     app->log_y_check = gtk_check_button_new_with_label("Log Y axis");
     app->integrate_check = gtk_check_button_new_with_label("Integrate");
+    app->detect_gaps_check = gtk_check_button_new_with_label("Detect time gaps");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->detect_gaps_check),
+                                 app->detect_time_gaps);
 
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->y_all_radio), TRUE);
     gtk_box_pack_start(GTK_BOX(y_box), app->y_all_radio, FALSE, FALSE, 0);
@@ -3645,6 +3689,7 @@ static void build_gui(AppData *app)
     gtk_box_pack_start(GTK_BOX(y_box), app->y_negative_radio, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(y_box), app->log_y_check, FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(y_box), app->integrate_check, FALSE, FALSE, 2);
+    gtk_box_pack_start(GTK_BOX(y_box), app->detect_gaps_check, FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(control_row), y_frame, TRUE, TRUE, 0);
 
     GtkWidget *selection_frame = gtk_frame_new("Set selection");
@@ -3678,6 +3723,8 @@ static void build_gui(AppData *app)
     g_signal_connect(app->y_negative_radio, "toggled", G_CALLBACK(y_range_toggled), app);
     g_signal_connect(app->log_y_check, "toggled", G_CALLBACK(log_y_toggled), app);
     g_signal_connect(app->integrate_check, "toggled", G_CALLBACK(integrate_toggled), app);
+    g_signal_connect(app->detect_gaps_check, "toggled",
+                     G_CALLBACK(detect_gaps_toggled), app);
     g_signal_connect(app->match_variable_colors_check, "toggled",
                      G_CALLBACK(match_variable_colors_toggled), app);
 
@@ -3756,7 +3803,7 @@ static void usage(const char *progname)
 "tsviewer " TSVIEWER_VERSION " -- Interactive Scientific Time-Series Viewer\n"
 "\n"
 "Usage:\n"
-"    %s file1 [file2] [file3] [file4]\n"
+"    %s [--no-gap-detect] file1 [file2] [file3] [file4]\n"
 "\n"
 "Input contract:\n"
 "    tsviewer assumes that each input file represents a valid time series\n"
@@ -3768,6 +3815,11 @@ static void usage(const char *progname)
 "    case, no units, calendar meaning, sampling interval, or time origin are\n"
 "    implied or inferred.  The coordinate may be an index, elapsed time,\n"
 "    simulation time, fractional day, or another user-defined quantity.\n"
+"\n"
+"Options:\n"
+"    --no-gap-detect  Disable automatic calendar-time gap detection.\n"
+"                     By default, lines break when delta-t exceeds 1.5 times\n"
+"                     the median positive delta-t for the series.\n"
 "\n"
 "Arguments:\n"
 "    file1    Reference or observed series.\n"
@@ -3820,6 +3872,17 @@ static void usage(const char *progname)
 
 int main(int argc, char **argv)
 {
+    int detect_time_gaps = TRUE_INT;
+    int write_arg = 1;
+
+    for (int read_arg = 1; read_arg < argc; read_arg++) {
+        if (strcmp(argv[read_arg], "--no-gap-detect") == 0) {
+            detect_time_gaps = FALSE_INT;
+        } else {
+            argv[write_arg++] = argv[read_arg];
+        }
+    }
+    argc = write_arg;
 
     if (argc == 1) {
         usage(argv[0]);
@@ -3851,6 +3914,7 @@ int main(int argc, char **argv)
     app.y_range_mode = Y_RANGE_ALL;
     app.log_y_axis = FALSE_INT;
     app.integrate_series = FALSE_INT;
+    app.detect_time_gaps = detect_time_gaps;
     app.match_variable_colors = TRUE_INT;
     app.status_notice[0] = '\0';
 

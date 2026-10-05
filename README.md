@@ -108,6 +108,20 @@ The **Integrate** option performs trapezoidal integration along the abscissa. Fo
 
 These controls are useful when examining fluxes, accumulated quantities, water-balance terms, discharge spanning several orders of magnitude, or variables containing both positive and negative values.
 
+### Time-gap detection
+
+For calendar-time data, **Detect time gaps** is enabled by default. `tsviewer` estimates the nominal sampling interval as the median of the positive time increments in each series. A plotted line is broken whenever the interval between consecutive finite observations exceeds **1.5 times the median time increment**. This is useful for regularly sampled observations and model output because missing records are shown as visible gaps rather than being silently bridged by a line.
+
+For inherently irregular event data, such as tipping-bucket rainfall observations, a long interval between records may be physically meaningful rather than evidence of missing data. In that case, turn off **Detect time gaps** in the GUI. Consecutive finite observations will then be connected regardless of their time separation.
+
+Gap detection can also be disabled at startup with:
+
+```text
+./tsviewer --no-gap-detect tipping_bucket.csv
+```
+
+The option affects only whether lines are drawn across large time intervals; it does not alter timestamps or data values.
+
 ## Input philosophy
 
 One of the principal design goals of `tsviewer` is:
@@ -136,10 +150,11 @@ Daily, sub-daily, monthly, annual, and generic numeric-coordinate data can be di
 
 ```text
 YYYY-MM-DD
-YYYY-MM-DD HH:MM
-YYYY-MM-DD HH:MM:SS
-YYYYMMDDHHMM
-YYYYMMDDHHMMSS
+YYYY-MM-DD hh:mm
+YYYY-MM-DD hh:mm:ss
+YYYY-MM-DD hh:mm:ss.sss
+YYYYMMDDhhmm
+YYYYMMDDhhmmss
 Julian Date
 Modified Julian Date
 Unix epoch seconds
@@ -251,6 +266,12 @@ Compare several model runs:
 
 ```text
 ./tsviewer observations.csv model_A.csv model_B.csv model_C.csv
+```
+
+For irregularly sampled event data, disable automatic time-gap detection:
+
+```text
+./tsviewer --no-gap-detect tipping_bucket.csv
 ```
 
 Display command-line help:
