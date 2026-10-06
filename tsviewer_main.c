@@ -32,7 +32,7 @@
 #define MAX_LINE 8192
 #define MAX_INPUT_FILES 4
 #define BAD_VALUE -9999.0
-#define TSVIEWER_VERSION "1.06"
+#define TSVIEWER_VERSION "1.07"
 
 /* ---------------------------------------------------------------------
  * tsviewer -- Interactive Scientific Time-Series Viewer
@@ -133,6 +133,8 @@
  *         September, 2026
  *  v1.06: Modified to compile on MS Windows using mingw
  *         Added option to disable data gap detection, Oct. 2026
+ *  v1.07: Header detection recognizes text in column 1 followed by a
+ *         timestamp in column 2 (e.g. station,valid_utc,...), Oct. 2026
  *
  * --------------------------------------------------------------------- */
 
@@ -1511,34 +1513,48 @@ static int load_generic_delimited(AppData *app, const char *filename, int has_he
                               detected_format);
 }
 
-static int line_first_field_is_coordinate_delimited(const char *line,
-                                                    DelimiterType delimiter,
-                                                    TimestampFormat *format_out)
+/* Return TRUE_INT if this line begins with a plotting coordinate, using the
+   same rule as detect_interval_timestamp_columns(): column 1 may be a
+   recognized timestamp or a finite numeric abscissa, or, failing that,
+   column 2 may be a recognized timestamp (e.g. station,datetime,v1,...).
+   A non-timestamp numeric value in column 2 is NOT accepted, because that
+   would make most header-less data lines look like coordinates. */
+static int line_has_leading_coordinate_delimited(const char *line,
+                                                 DelimiterType delimiter,
+                                                 TimestampFormat *format_out)
 {
     char **fields = NULL;
-    int nf = split_data_line(line, delimiter, &fields);
-    int ok = FALSE_INT;
+    int number_of_fields = split_data_line(line, delimiter, &fields);
+    int coordinate_found = FALSE_INT;
 
     if (format_out) *format_out = TIMESTAMP_FORMAT_UNKNOWN;
 
-    if (nf > 0) {
-        time_t t;
-        TimestampFormat tf = TIMESTAMP_FORMAT_UNKNOWN;
+    if (number_of_fields > 0) {
+        time_t parsed_time_s = (time_t)-1;
+        TimestampFormat parsed_format = TIMESTAMP_FORMAT_UNKNOWN;
+        double first_field_value = NAN;
 
-        if (parse_timestamp_any(fields[0], &t, NULL, &tf)) {
-            ok = TRUE_INT;
-            if (format_out) *format_out = tf;
-        } else {
-            double x_value = NAN;
-            if (parse_double_or_nan(fields[0], &x_value) && isfinite(x_value)) {
-                ok = TRUE_INT;
-                if (format_out) *format_out = TIMESTAMP_FORMAT_NUMERIC_ABSCISSA;
-            }
+        if (parse_timestamp_any(fields[0], &parsed_time_s, NULL, &parsed_format)) {
+            /* Column 1 is a recognized timestamp. */
+            coordinate_found = TRUE_INT;
+            if (format_out) *format_out = parsed_format;
+        } else if (parse_double_or_nan(fields[0], &first_field_value) &&
+                   isfinite(first_field_value)) {
+            /* Column 1 is an index or generic numeric abscissa. */
+            coordinate_found = TRUE_INT;
+            if (format_out) *format_out = TIMESTAMP_FORMAT_NUMERIC_ABSCISSA;
+        } else if (number_of_fields > 1 &&
+                   parse_timestamp_any(fields[1], &parsed_time_s, NULL,
+                                       &parsed_format)) {
+            /* Column 1 is non-numeric text (station ID, site code, etc.)
+               and column 2 is a recognized timestamp. */
+            coordinate_found = TRUE_INT;
+            if (format_out) *format_out = parsed_format;
         }
     }
 
-    free_csv_fields(fields, nf);
-    return ok;
+    free_csv_fields(fields, number_of_fields);
+    return coordinate_found;
 }
 
 static int load_time_series_file(AppData *app, const char *filename)
@@ -1576,10 +1592,11 @@ static int load_time_series_file(AppData *app, const char *filename)
 
     TimestampFormat first_tf = TIMESTAMP_FORMAT_UNKNOWN;
     TimestampFormat second_tf = TIMESTAMP_FORMAT_UNKNOWN;
-    int first_is_coordinate = line_first_field_is_coordinate_delimited(line1, delimiter, &first_tf);
+    int first_is_coordinate =
+        line_has_leading_coordinate_delimited(line1, delimiter, &first_tf);
     int second_is_coordinate = line2[0]
-                             ? line_first_field_is_coordinate_delimited(line2, delimiter, &second_tf)
-                             : FALSE_INT;
+        ? line_has_leading_coordinate_delimited(line2, delimiter, &second_tf)
+        : FALSE_INT;
 
     /* A non-coordinate first line followed by a coordinate line is a header. */
     if (!first_is_coordinate && second_is_coordinate) {
@@ -1592,8 +1609,9 @@ static int load_time_series_file(AppData *app, const char *filename)
     }
 
     fprintf(stderr,
-            "Unable to determine file format. The first data column must be either\n"
-            "a recognized timestamp or a finite numeric abscissa.\n");
+            "Unable to determine file format. Column 1 must be a recognized\n"
+            "timestamp or finite numeric abscissa, or column 2 must be a\n"
+            "recognized timestamp.\n");
     return FALSE_INT;
 }
 

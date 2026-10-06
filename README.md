@@ -163,7 +163,7 @@ year,month
 year
 ```
 
-A recognized timestamp may appear in the first or second column.
+A recognized timestamp may appear in the first or second column. When the timestamp is in the second column, the first column may be a record index or a non-numeric identifier such as a station ID or site code; that column is ignored and is not plotted. A timestamp-like field in the third or later column is never used as the plotting coordinate.
 
 Generic finite numeric values in the first column are also supported. These can represent, for example:
 
@@ -198,6 +198,17 @@ JD,value1,value2
 2461041.5833,13.2,14.8
 ```
 
+or, with an identifier column ahead of the timestamp:
+
+```text
+station,valid_utc,wind_speed_kt,wind_direction_deg,hourly_max_gust_kt
+LAR,1990-01-01 00:00,13.0,220,
+LAR,1990-01-01 01:00,11.0,210,19.0
+LAR,1990-01-01 02:00,10.0,190,19.0
+```
+
+Here `station` is skipped, `valid_utc` is the time coordinate, and the empty gust fields are treated as missing values.
+
 or simply:
 
 ```text
@@ -230,7 +241,7 @@ The equivalent compilation uses:
 ```text
 gcc -Wall -Wextra -O2 -std=c99 -pedantic \
     $(pkg-config --cflags gtk+-3.0) \
-    -o tsviewer main.c \
+    -o tsviewer tsviewer_main.c \
     $(pkg-config --libs gtk+-3.0) -lm
 ```
 
@@ -347,6 +358,9 @@ The program is meant to be the plotting tool that is easy enough to invoke repea
               elsewhere in the record; compiler-warning cleanup.
 - **v1.05** - change to default radio button settings when more than one file is displayed.
 - **v1.06** - Compile options for MS Windows using mingw (contributed by JoshCu) Thanks!
+              Added `--no-gap-detect` and the **Detect time gaps** control.
+- **v1.07** - Header detection recognizes a non-numeric first column (e.g. a station
+              ID) followed by a timestamp in the second column.
 
 ## Author
 
