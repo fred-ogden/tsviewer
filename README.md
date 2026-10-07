@@ -108,6 +108,10 @@ The **Integrate** option performs trapezoidal integration along the abscissa. Fo
 
 These controls are useful when examining fluxes, accumulated quantities, water-balance terms, discharge spanning several orders of magnitude, or variables containing both positive and negative values.
 
+### Data-point symbols
+
+The **Data points** option overlays filled circles at individual observations when the visible data are sparse enough for the symbols to remain distinguishable. Symbols are suppressed automatically when the displayed point density is too high and appear as the user zooms in. The current criterion requires approximately 7 pixels of horizontal space per visible finite point, with a 10 percent spacing margin. Lines remain displayed whether or not point symbols are visible.
+
 ### Time-gap detection
 
 For calendar-time data, **Detect time gaps** is enabled by default. `tsviewer` estimates the nominal sampling interval as the median of the positive time increments in each series. A plotted line is broken whenever the interval between consecutive finite observations exceeds **1.5 times the median time increment**. This is useful for regularly sampled observations and model output because missing records are shown as visible gaps rather than being silently bridged by a line.
@@ -163,7 +167,7 @@ year,month
 year
 ```
 
-A recognized timestamp may appear in the first or second column. When the timestamp is in the second column, the first column may be a record index or a non-numeric identifier such as a station ID or site code; that column is ignored and is not plotted. A timestamp-like field in the third or later column is never used as the plotting coordinate.
+A recognized timestamp may appear in the first or second column. When the timestamp is in the second column, the first column may be a record index or a non-numeric identifier such as a station ID or site code; that column is ignored and is not plotted. An explicit calendar date/time in column 2 may override a numeric index in column 1. However, a numeric value in column 2 is not allowed to override a valid numeric column-1 abscissa merely because its magnitude resembles Julian Date, Modified Julian Date, or Unix time. A numeric column-2 time coordinate must be explicitly identified by the header (for example `MJD`, `JD`, or a recognized Unix-time label). A timestamp-like field in the third or later column is never used as the plotting coordinate.
 
 Generic finite numeric values in the first column are also supported. These can represent, for example:
 
@@ -219,6 +223,22 @@ step value1 value2
 ```
 
 The intent is that common scientific output should normally be viewable directly.
+
+### Example files and regression tests
+
+The files in the `examples/` directory provide useful examples of supported input formats and also serve as simple regression tests. The following commands have been tested successfully:
+
+```text
+tsviewer examples/AmeriFlux.csv
+tsviewer examples/CSI_TOA5_format.dat
+tsviewer examples/model1_temperatures.csv examples/model2_temperatures.csv
+tsviewer examples/perf_by_susbsteps.dat
+tsviewer examples/wind.csv
+```
+
+Together these exercise several of `tsviewer`'s input and plotting capabilities, including AmeriFlux data, Campbell Scientific TOA5 data, multiple-file comparison, generic numeric abscissas, and ordinary time-series data.
+
+`perf_by_susbsteps.dat` is particularly useful for testing generic numeric-abscissa handling. Its first column contains monotonically increasing numeric coordinates rather than timestamps. It also provides a convenient test of the **Data points** option: point symbols should appear when the displayed interval contains sufficiently few points to distinguish them and disappear entirely when the displayed interval becomes too dense.
 
 ## Building
 
@@ -361,6 +381,9 @@ The program is meant to be the plotting tool that is easy enough to invoke repea
               Added `--no-gap-detect` and the **Detect time gaps** control.
 - **v1.07** - Header detection recognizes a non-numeric first column (e.g. a station
               ID) followed by a timestamp in the second column.
+- **v1.08** - Numeric column-1 coordinates take precedence over ambiguous numeric time-like
+              values in column 2 unless the header explicitly identifies column 2 as time;
+              improved commented-header selection; added density-limited **Data points** symbols.
 
 ## Author
 

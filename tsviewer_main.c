@@ -32,7 +32,7 @@
 #define MAX_LINE 8192
 #define MAX_INPUT_FILES 4
 #define BAD_VALUE -9999.0
-#define TSVIEWER_VERSION "1.07"
+#define TSVIEWER_VERSION "1.08"
 
 /* ---------------------------------------------------------------------
  * tsviewer -- Interactive Scientific Time-Series Viewer
@@ -135,6 +135,9 @@
  *         Added option to disable data gap detection, Oct. 2026
  *  v1.07: Header detection recognizes text in column 1 followed by a
  *         timestamp in column 2 (e.g. station,valid_utc,...), Oct. 2026
+ *  v1.08: Resolve numeric-abscissa/column-2 timestamp ambiguity, improve
+ *         commented-header selection, and add density-limited data-point
+ *         symbols, Oct. 2026
  *
  * --------------------------------------------------------------------- */
 
@@ -229,6 +232,7 @@ typedef struct {
     GtkWidget *log_y_check;
     GtkWidget *integrate_check;
     GtkWidget *detect_gaps_check;
+    GtkWidget *data_points_check;
     GtkWidget *pair_sets_check;
     GtkWidget *match_variable_colors_check;
     GtkWidget *help_window;
@@ -238,6 +242,7 @@ typedef struct {
     int log_y_axis;
     int integrate_series;
     int detect_time_gaps;
+    int show_data_points;
     int match_variable_colors;
     char status_notice[512];
 
@@ -282,6 +287,7 @@ static void free_integrated_values(AppData *app);
 static int integrated_values_are_cached(const AppData *app);
 static double series_display_value(const AppData *app, const TimeSeries *series, int index);
 static void show_help_window(AppData *app);
+static int header_token_numeric_time_format(const char *src, TimestampFormat *format_out);
 
 
 static void normalize_series_name(const char *src, char *dst, size_t dst_size)
@@ -994,6 +1000,16 @@ static void apply_header_time_coordinate_hints(char **header_fields, int n_heade
 {
     if (!header_fields || n_header <= 0 || !time_col || !first_data_col) return;
 
+    if (n_header >= 2) {
+        TimestampFormat header_format = TIMESTAMP_FORMAT_UNKNOWN;
+        if (header_token_numeric_time_format(header_fields[1], &header_format)) {
+            *time_col = 1;
+            *first_data_col = 2;
+            if (detected_format) *detected_format = header_format;
+            return;
+        }
+    }
+
     /* If the first column is explicitly labeled as a Julian day/date, trust it
        as the time coordinate.  Files often include redundant calendar fields
        immediately afterward (year, month, day, hour, minute, second); these are
@@ -1069,6 +1085,41 @@ static int timestamp_formats_are_interval_compatible(TimestampFormat tf0, Timest
     return FALSE_INT;
 }
 
+static int timestamp_format_is_explicit_calendar(TimestampFormat format)
+{
+    return (format == TIMESTAMP_FORMAT_TEXT ||
+            format == TIMESTAMP_FORMAT_DATE_ONLY ||
+            format == TIMESTAMP_FORMAT_COMPACT_YMDHM ||
+            format == TIMESTAMP_FORMAT_COMPACT_YMDHMS ||
+            format == TIMESTAMP_FORMAT_INTERVAL_END_COMPACT) ? TRUE_INT : FALSE_INT;
+}
+
+static int header_token_numeric_time_format(const char *src, TimestampFormat *format_out)
+{
+    char norm[256];
+    normalize_header_token(src, norm, sizeof(norm));
+    if (strcmp(norm, "mjd") == 0 || strcmp(norm, "modifiedjuliandate") == 0 ||
+        strcmp(norm, "modifiedjulianday") == 0) {
+        if (format_out) *format_out = TIMESTAMP_FORMAT_MODIFIED_JULIAN_DATE;
+        return TRUE_INT;
+    }
+    if (strcmp(norm, "jd") == 0 || strcmp(norm, "juliandate") == 0 ||
+        strcmp(norm, "julianday") == 0) {
+        if (format_out) *format_out = TIMESTAMP_FORMAT_JULIAN_DATE;
+        return TRUE_INT;
+    }
+    if (strcmp(norm, "unixtime") == 0 || strcmp(norm, "unixseconds") == 0 ||
+        strcmp(norm, "epochseconds") == 0) {
+        if (format_out) *format_out = TIMESTAMP_FORMAT_UNIX_SECONDS;
+        return TRUE_INT;
+    }
+    if (strcmp(norm, "unixmilliseconds") == 0 || strcmp(norm, "epochmilliseconds") == 0) {
+        if (format_out) *format_out = TIMESTAMP_FORMAT_UNIX_MILLISECONDS;
+        return TRUE_INT;
+    }
+    return FALSE_INT;
+}
+
 static int detect_interval_timestamp_columns(char **fields, int nf, int *time_col_out,
                                              int *first_data_col_out,
                                              TimestampFormat *format_out)
@@ -1124,18 +1175,21 @@ static int detect_interval_timestamp_columns(char **fields, int nf, int *time_co
         return TRUE_INT;
     }
 
-    /* Version 0.9: an index or ancillary first field may precede the primary
-       timestamp.  Deliberately search no farther than column 2. */
-    if (col1_is_time) {
-        *time_col_out = 1;
-        *first_data_col_out = 2;
-        if (format_out) *format_out = tf1;
-        return TRUE_INT;
-    }
-
+    /* Column 2 overrides a finite numeric column 1 only when column 2 is an
+       explicit calendar representation.  Numeric encodings such as MJD, JD,
+       and Unix time are ambiguous here and must not steal the abscissa merely
+       because their magnitude happens to look time-like.  A header may
+       explicitly identify such a numeric column-2 coordinate later. */
     {
         double x_value = NAN;
-        if (parse_double_or_nan(fields[0], &x_value) && isfinite(x_value)) {
+        int col0_is_numeric = parse_double_or_nan(fields[0], &x_value) && isfinite(x_value);
+        if (col1_is_time && (!col0_is_numeric || timestamp_format_is_explicit_calendar(tf1))) {
+            *time_col_out = 1;
+            *first_data_col_out = 2;
+            if (format_out) *format_out = tf1;
+            return TRUE_INT;
+        }
+        if (col0_is_numeric) {
             *time_col_out = 0;
             *first_data_col_out = 1;
             if (format_out) *format_out = TIMESTAMP_FORMAT_NUMERIC_ABSCISSA;
@@ -1365,6 +1419,26 @@ static char *clean_comment_candidate(const char *line)
     return trim_copy(line);
 }
 
+static int comment_candidate_is_meaningful_header(const char *candidate,
+                                                  DelimiterType delimiter)
+{
+    char **fields = NULL;
+    int n_fields;
+    int has_name = FALSE_INT;
+    if (!candidate || !candidate[0]) return FALSE_INT;
+    n_fields = split_data_line(candidate, delimiter, &fields);
+    for (int i = 0; i < n_fields && !has_name; i++) {
+        for (const char *p = fields[i]; *p; p++) {
+            if (isalpha((unsigned char)*p) || *p == '_') {
+                has_name = TRUE_INT;
+                break;
+            }
+        }
+    }
+    free_csv_fields(fields, n_fields);
+    return has_name;
+}
+
 static int read_next_noncomment_line(FILE *fp, char *line, size_t line_size)
 {
     while (fgets(line, (int)line_size, fp)) {
@@ -1409,7 +1483,8 @@ static int load_generic_delimited(AppData *app, const char *filename, int has_he
             if (is_blank_line(line)) continue;
             if (is_comment_line(line)) {
                 char *candidate = clean_comment_candidate(line);
-                if (candidate && candidate[0]) {
+                if (candidate && candidate[0] &&
+                    comment_candidate_is_meaningful_header(candidate, delimiter)) {
                     free(last_comment_candidate);
                     last_comment_candidate = candidate;
                 } else {
@@ -2465,6 +2540,14 @@ static void detect_gaps_toggled(GtkToggleButton *button, gpointer user_data)
     gtk_widget_queue_draw(app->drawing_area);
 }
 
+static void data_points_toggled(GtkToggleButton *button, gpointer user_data)
+{
+    AppData *app = (AppData *)user_data;
+    app->show_data_points =
+        gtk_toggle_button_get_active(button) ? TRUE_INT : FALSE_INT;
+    gtk_widget_queue_draw(app->drawing_area);
+}
+
 static void match_variable_colors_toggled(GtkToggleButton *button, gpointer user_data)
 {
     AppData *app = (AppData *)user_data;
@@ -3021,6 +3104,31 @@ static gboolean draw_plot(GtkWidget *widget, cairo_t *cr, gpointer user_data)
         }
     }
 
+    int draw_data_points = FALSE_INT;
+    if (app->show_data_points) {
+        int maximum_visible_finite_points = 0;
+        const double point_spacing_px = 7.0;
+        const double density_fraction = 0.90;
+
+        for (int s = 0; s < app->n_series; s++) {
+            TimeSeries *series = &app->series[s];
+            int si0 = 0, si1 = 0;
+            int visible_finite_points = 0;
+            if (!series->enabled) continue;
+            if (!series_index_range(series, t_start, t_end, &si0, &si1)) continue;
+            for (int i = si0; i < si1; i++) {
+                double v = series_display_value(app, series, i);
+                if (value_is_visible_for_y_mode(app, v)) visible_finite_points++;
+            }
+            if (visible_finite_points > maximum_visible_finite_points)
+                maximum_visible_finite_points = visible_finite_points;
+        }
+
+        if ((double)maximum_visible_finite_points * point_spacing_px <=
+            density_fraction * (x1 - x0))
+            draw_data_points = TRUE_INT;
+    }
+
     for (int s = 0; s < app->n_series; s++) {
         TimeSeries *series = &app->series[s];
         int si0 = 0, si1 = 0;
@@ -3084,6 +3192,20 @@ static gboolean draw_plot(GtkWidget *widget, cairo_t *cr, gpointer user_data)
         }
         cairo_stroke(cr);
         cairo_set_dash(cr, NULL, 0, 0.0);
+
+        if (draw_data_points) {
+            const double point_radius_px = 2.5;
+            cairo_set_source_rgb(cr, series_red, series_green, series_blue);
+            for (int i = si0; i < si1; i++) {
+                double v = series_display_value(app, series, i);
+                if (!value_is_visible_for_y_mode(app, v)) continue;
+                double tx = (series->time_values[i] - t_start) / (t_end - t_start);
+                double x = x0 + tx * (x1 - x0);
+                double y = y_value_to_screen(app, v, ymin, ymax, y0, y1);
+                cairo_arc(cr, x, y, point_radius_px, 0.0, 2.0 * M_PI);
+                cairo_fill(cr);
+            }
+        }
     }
 
     if (app->mouse_inside && app->mouse_x >= x0 && app->mouse_x <= x1 && app->mouse_y >= y0 && app->mouse_y <= y1) {
@@ -3547,6 +3669,11 @@ static void show_help_window(AppData *app)
         "INTEGRATE\n"
         "  Integrate displays a cumulative trapezoidal integral. For calendar\n"
         "  time series, time increments are expressed in hours.\n\n"
+        "DATA POINTS\n"
+        "  Data points overlays filled circles at observations when the visible\n"
+        "  point density is low enough to distinguish individual symbols. Symbols\n"
+        "  appear automatically as the plot is zoomed in and disappear when the\n"
+        "  visible points would be too crowded.\n\n"
         "TIME GAPS\n"
         "  Detect time gaps is enabled by default for calendar-time data. Lines\n"
         "  are broken when an interval exceeds 1.5 times the median positive\n"
@@ -3698,6 +3825,7 @@ static void build_gui(AppData *app)
     app->log_y_check = gtk_check_button_new_with_label("Log Y axis");
     app->integrate_check = gtk_check_button_new_with_label("Integrate");
     app->detect_gaps_check = gtk_check_button_new_with_label("Detect time gaps");
+    app->data_points_check = gtk_check_button_new_with_label("Data points");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->detect_gaps_check),
                                  app->detect_time_gaps);
 
@@ -3708,6 +3836,7 @@ static void build_gui(AppData *app)
     gtk_box_pack_start(GTK_BOX(y_box), app->log_y_check, FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(y_box), app->integrate_check, FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(y_box), app->detect_gaps_check, FALSE, FALSE, 2);
+    gtk_box_pack_start(GTK_BOX(y_box), app->data_points_check, FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(control_row), y_frame, TRUE, TRUE, 0);
 
     GtkWidget *selection_frame = gtk_frame_new("Set selection");
@@ -3743,6 +3872,8 @@ static void build_gui(AppData *app)
     g_signal_connect(app->integrate_check, "toggled", G_CALLBACK(integrate_toggled), app);
     g_signal_connect(app->detect_gaps_check, "toggled",
                      G_CALLBACK(detect_gaps_toggled), app);
+    g_signal_connect(app->data_points_check, "toggled",
+                     G_CALLBACK(data_points_toggled), app);
     g_signal_connect(app->match_variable_colors_check, "toggled",
                      G_CALLBACK(match_variable_colors_toggled), app);
 
@@ -3933,6 +4064,7 @@ int main(int argc, char **argv)
     app.log_y_axis = FALSE_INT;
     app.integrate_series = FALSE_INT;
     app.detect_time_gaps = detect_time_gaps;
+    app.show_data_points = FALSE_INT;
     app.match_variable_colors = TRUE_INT;
     app.status_notice[0] = '\0';
 
